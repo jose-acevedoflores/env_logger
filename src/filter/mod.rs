@@ -167,6 +167,68 @@ impl Filter {
     }
 }
 
+/// Trait used by the Dynamic and Static Level filters
+pub trait FilterTrait {
+    /// Returns the maximum `LevelFilter` that this env logger instance is
+    /// configured to output.
+    fn filter(&self) -> LevelFilter;
+
+    /// Checks if this record matches the configured filter.
+    fn matches(&self, record: &Record) -> bool;
+
+    /// Determines if a log message with the specified metadata would be logged.
+    fn enabled(&self, metadata: &Metadata) -> bool;
+}
+
+/// Holds a filter that can't change log levels at runtime
+#[derive(Debug)]
+pub struct StaticLevelFilter {
+    pub(crate) filter: Filter,
+}
+
+/// Holds a filter that can change log levels at runtime
+#[derive(Debug)]
+pub struct DynamicLevelFilter {
+    pub(crate) filter: std::sync::RwLock<Filter>,
+    pub(crate) orig_env_config: std::sync::RwLock<String>,
+}
+
+impl FilterTrait for DynamicLevelFilter {
+    /// Returns the maximum `LevelFilter` that this env logger instance is
+    /// configured to output.
+    fn filter(&self) -> LevelFilter {
+        self.filter.read().unwrap().filter()
+    }
+
+    /// Checks if this record matches the configured filter.
+    fn matches(&self, record: &Record) -> bool {
+        self.filter.read().unwrap().matches(record)
+    }
+
+    /// Determines if a log message with the specified metadata would be logged.
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        self.filter.read().unwrap().enabled(metadata)
+    }
+}
+
+impl FilterTrait for StaticLevelFilter {
+    /// Returns the maximum `LevelFilter` that this env logger instance is
+    /// configured to output.
+    fn filter(&self) -> LevelFilter {
+        self.filter.filter()
+    }
+
+    /// Checks if this record matches the configured filter.
+    fn matches(&self, record: &Record) -> bool {
+        self.filter.matches(record)
+    }
+
+    /// Determines if a log message with the specified metadata would be logged.
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        self.filter.enabled(metadata)
+    }
+}
+
 impl Builder {
     /// Initializes the filter builder with defaults.
     pub fn new() -> Builder {
