@@ -278,9 +278,8 @@
 #![cfg_attr(rustbuild, unstable(feature = "rustc_private", issue = "27812"))]
 #![deny(missing_debug_implementations, missing_docs)]
 
+use log::{warn, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use std::{borrow::Cow, cell::RefCell, env, io};
-
-use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
 
 pub mod filter;
 pub mod fmt;
@@ -296,6 +295,9 @@ pub const DEFAULT_FILTER_ENV: &str = "RUST_LOG";
 
 /// The default name for the environment variable to read style preferences from.
 pub const DEFAULT_WRITE_STYLE_ENV: &str = "RUST_LOG_STYLE";
+
+/// The path for the config file used to adjust the filters at runtime.
+pub const FILTER_RUNTIME_CONFIG_PATH_ENV: &str = "RUST_LOG_PATH";
 
 /// Set of environment variables to configure from.
 ///
@@ -340,8 +342,9 @@ struct Var<'a> {
 /// [`Builder`]: struct.Builder.html
 pub struct Logger {
     writer: Writer,
-    filter: Filter,
+    filter: std::sync::RwLock<Filter>,
     format: FormatFn,
+    orig_env_config: std::sync::RwLock<String>,
 }
 
 /// `Builder` acts as builder for initializing a `Logger`.
@@ -372,6 +375,7 @@ pub struct Builder {
     filter: filter::Builder,
     writer: writer::Builder,
     format: fmt::Builder,
+    orig_env_config: Option<String>,
     built: bool,
 }
 
@@ -487,6 +491,7 @@ impl Builder {
 
         if let Some(s) = env.get_filter() {
             self.parse_filters(&s);
+            self.orig_env_config = Some(s);
         }
 
         if let Some(s) = env.get_write_style() {
@@ -792,6 +797,32 @@ impl Builder {
     /// This should be called early in the execution of a Rust program. Any log
     /// events that occur before initialization will be ignored.
     ///
+    /// Returns a [`DynamicLogLevel`] that can be used to change log levels at runtime.
+    /// # Errors
+    ///
+    /// This function will fail if it is called more than once, or if another
+    /// library has already initialized a global logger.
+    pub fn try_init_dynamic_level(&mut self) -> Result<DynamicLogLevel, SetLoggerError> {
+        let logger = self.build();
+
+        let max_level = logger.filter();
+        let b = Box::new(logger);
+        let b = Box::leak(b);
+        let r = log::set_logger(b);
+
+        if r.is_ok() {
+            log::set_max_level(max_level);
+            Ok(DynamicLogLevel { logger_ref: b })
+        } else {
+            Err(r.err().unwrap())
+        }
+    }
+
+    /// Initializes the global logger with the built env logger.
+    ///
+    /// This should be called early in the execution of a Rust program. Any log
+    /// events that occur before initialization will be ignored.
+    ///
     /// # Panics
     ///
     /// This function will panic if it is called more than once, or if another
@@ -811,8 +842,14 @@ impl Builder {
 
         Logger {
             writer: self.writer.build(),
-            filter: self.filter.build(),
+            filter: std::sync::RwLock::new(self.filter.build()),
             format: self.format.build(),
+            orig_env_config: std::sync::RwLock::new(
+                self.orig_env_config
+                    .as_ref()
+                    .map(|r| r.to_string())
+                    .unwrap_or("".to_string()),
+            ),
         }
     }
 }
@@ -875,18 +912,55 @@ impl Logger {
     /// Returns the maximum `LevelFilter` that this env logger instance is
     /// configured to output.
     pub fn filter(&self) -> LevelFilter {
-        self.filter.filter()
+        self.filter.read().unwrap().filter()
     }
 
     /// Checks if this record matches the configured filter.
     pub fn matches(&self, record: &Record) -> bool {
-        self.filter.matches(record)
+        self.filter.read().unwrap().matches(record)
+    }
+}
+
+/// `DynamicLogLevel` is used to change log levels at runtime
+#[derive(Debug)]
+pub struct DynamicLogLevel {
+    logger_ref: &'static Logger,
+}
+
+impl DynamicLogLevel {
+    /// Called to trigger a check and update (if applicable) to the log levels.
+    pub fn check_filter_config(&self) {
+        let runtime_config_path = env::var(FILTER_RUNTIME_CONFIG_PATH_ENV);
+        if runtime_config_path.is_err() {
+            warn!(
+                "Attempted to change filters but env var {} is not set",
+                FILTER_RUNTIME_CONFIG_PATH_ENV
+            );
+            return;
+        }
+        let runtime_config_path = runtime_config_path.unwrap();
+        let runtime_config = std::fs::read_to_string(&runtime_config_path).unwrap();
+
+        if self.logger_ref.orig_env_config.read().unwrap().trim() != runtime_config.trim() {
+            self.update_filter(&runtime_config);
+
+            let mut orig_w_lock = self.logger_ref.orig_env_config.write().unwrap();
+            *orig_w_lock = runtime_config;
+        }
+    }
+
+    fn update_filter(&self, runtime_config: &str) {
+        let mut b = filter::Builder::new();
+        b.parse(runtime_config);
+        let f = b.build();
+        let mut filter_w_lock = self.logger_ref.filter.write().unwrap();
+        *filter_w_lock = f;
     }
 }
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        self.filter.enabled(metadata)
+        self.filter.read().unwrap().enabled(metadata)
     }
 
     fn log(&self, record: &Record) {
