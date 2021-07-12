@@ -259,12 +259,36 @@
 //!
 //! env_logger::Builder::from_env(Env::default().default_filter_or("warn")).init();
 //! ```
+//! ## Changing log levels at runtime
+//!
+//! To change log levels at runtime, the user needs to initialize the logger using the
+//! [`try_init_dynamic_level`] function that returns a [`DynamicLogLevel`] handle.
+//!
+//! Next, trigger a check on the config file located at
+//! [`FILTER_RUNTIME_CONFIG_PATH_ENV`] via the [`check_filter_config`] method.
+//!
+//! If the contents of the config file at [`FILTER_RUNTIME_CONFIG_PATH_ENV`] are different than the
+//! `RUST_LOG` the program started with, it will restart the filters and use the new ones.
+//!
+//! ```
+//! use env_logger;
+//!
+//! let mut builder = env_logger::Builder::from_default_env();
+//! let dynamic_filter_check = builder.try_init_dynamic_level().unwrap();
+//! // ...
+//! // Periodically call this function to check if the filter configuration needs to be updated.
+//! dynamic_filter_check.check_filter_config();
+//! ```
 //!
 //! [gh-repo-examples]: https://github.com/env-logger-rs/env_logger/tree/master/examples
 //! [level-enum]: https://docs.rs/log/latest/log/enum.Level.html
 //! [log-crate-url]: https://docs.rs/log/
 //! [`Builder`]: struct.Builder.html
 //! [`Builder::is_test`]: struct.Builder.html#method.is_test
+//! [`try_init_dynamic_level`]: struct.Builder.html#method.try_init_dynamic_level
+//! [`DynamicLogLevel`]: struct.DynamicLogLevel.html
+//! [`check_filter_config`]: struct.DynamicLogLevel.html#method.check_filter_config
+//! [`FILTER_RUNTIME_CONFIG_PATH_ENV`]: constant.FILTER_RUNTIME_CONFIG_PATH_ENV.html
 //! [`Env`]: struct.Env.html
 //! [`fmt`]: fmt/index.html
 
@@ -298,6 +322,7 @@ pub const DEFAULT_FILTER_ENV: &str = "RUST_LOG";
 pub const DEFAULT_WRITE_STYLE_ENV: &str = "RUST_LOG_STYLE";
 
 /// The path for the config file used to adjust the filters at runtime.
+/// The contents of the file located on this path should follow the same format expected by `RUST_LOG`
 pub const FILTER_RUNTIME_CONFIG_PATH_ENV: &str = "RUST_LOG_PATH";
 
 /// Set of environment variables to configure from.
@@ -807,6 +832,8 @@ impl Builder {
     /// This should be called early in the execution of a Rust program. Any log
     /// events that occur before initialization will be ignored.
     ///
+    /// Returns a [`DynamicLogLevel`](struct.DynamicLogLevel.html) that can be used to change log
+    /// levels at runtime.
     /// # Errors
     ///
     /// This function will fail if it is called more than once, or if another
